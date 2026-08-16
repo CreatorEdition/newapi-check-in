@@ -65,11 +65,12 @@ https://gorouter.app/sign-up?aff=Y66b
 
 ### 4. 多账号配置格式
 
-支持单个与多个账号配置，可选 `name` 和 `provider` 字段：
+支持单个与多个账号配置，可选 `id`、`name` 和 `provider` 字段：
 
 ```json
 [
   {
+    "id": "account-1",
     "name": "我的主账号",
     "email": "account1@example.com",
     "password": "account1_password"
@@ -90,6 +91,7 @@ https://gorouter.app/sign-up?aff=Y66b
 - `api_user`：session cookies 登录时用于请求头的 new-api-user 参数；邮箱密码登录可省略
 - `provider` (可选)：指定使用的服务商，默认为 `anyrouter`
 - `name` (可选)：自定义账号显示名称，用于通知和日志中标识账号
+- `id` (可选但推荐)：稳定账号标识，用于余额历史和多次运行的账号隔离；不要填写 Cookie、Token 或密码
 
 **默认值说明**：
 
@@ -211,6 +213,7 @@ https://gorouter.app/sign-up?aff=Y66b
     "domain": "https://custom.example.com",
     "login_path": "/auth/login",
     "sign_in_path": "/api/checkin",
+    "checkin_path": "/api/user/checkin",
     "user_info_path": "/api/profile",
     "api_user_key": "New-Api-User",
     "bypass_method": "waf_cookies",
@@ -238,6 +241,7 @@ https://gorouter.app/sign-up?aff=Y66b
 - `domain` (必需)：服务商的域名
 - `login_path` (可选)：登录页面路径，默认为 `/login`（仅在 `bypass_method` 为 `"waf_cookies"` 时使用）
 - `sign_in_path` (可选)：签到 API 路径，默认为 `/api/user/sign_in`
+- `checkin_path` (可选)：`sign_in_path` 失败时的回退路径，默认为 `/api/user/checkin`
 - `user_info_path` (可选)：用户信息 API 路径，默认为 `/api/user/self`
 - `api_user_key` (可选)：API 用户标识请求头名称，默认为 `new-api-user`
 - `bypass_method` (可选)：WAF 绕过方法
@@ -253,9 +257,11 @@ https://gorouter.app/sign-up?aff=Y66b
     "domain": "https://custom.example.com",
     "login_path": "/auth/login",
     "sign_in_path": "/api/checkin",
+    "checkin_path": "/api/user/checkin",
     "user_info_path": "/api/profile",
     "api_user_key": "x-user-id",
-    "bypass_method": "waf_cookies"
+    "bypass_method": "waf_cookies",
+    "waf_cookie_names": ["acw_tc"]
   }
 }
 ```
@@ -374,6 +380,9 @@ uv run python -m cloakbrowser install
 # PROVIDERS={"agentrouter":{"domain":"https://agentrouter.org"}}
 # PROXY_SUBSCRIPTION_URL=https://example.com/sub?token=xxx
 # CHECKIN_PROXY_URL=http://127.0.0.1:7890
+# CHECKIN_PERSIST_PROFILE=true  # CI 默认关闭，避免缓存登录态
+# CHECKIN_USER_AGENT=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36
+# FAIL_ON_PARTIAL_SUCCESS=true  # 任一账号失败时让 GitHub Actions 返回失败
 
 # 运行签到脚本
 uv run checkin.py

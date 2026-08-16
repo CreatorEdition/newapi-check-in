@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from utils.browser import launch_login_context, load_browser_login_settings
+from utils.browser import _safe_profile_component, launch_login_context, load_browser_login_settings
 
 
 def test_browser_login_settings_records_profile_persistence(monkeypatch, tmp_path):
@@ -12,7 +12,16 @@ def test_browser_login_settings_records_profile_persistence(monkeypatch, tmp_pat
 	settings = load_browser_login_settings('Account 1', 'agentrouter', persist_profile=False)
 
 	assert settings.persist_profile is False
-	assert settings.profile_dir == tmp_path / 'agentrouter' / 'Account 1'
+	assert settings.profile_dir == tmp_path / _safe_profile_component('agentrouter') / _safe_profile_component('Account 1')
+
+
+def test_profile_component_cannot_escape_base_directory(monkeypatch, tmp_path):
+	monkeypatch.setenv('CHECKIN_BROWSER_PROFILE_DIR', str(tmp_path))
+
+	settings = load_browser_login_settings('../outside', '..\\escape', persist_profile=True)
+
+	assert tmp_path in settings.profile_dir.parents
+	assert '..' not in settings.profile_dir.parts
 
 
 @pytest.mark.asyncio

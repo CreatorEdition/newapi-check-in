@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from urllib.parse import urlsplit
 
 
 def get_proxy_server(*, use_proxy: bool = True) -> str | None:
@@ -18,3 +19,16 @@ def get_playwright_proxy(*, use_proxy: bool = True) -> dict[str, str] | None:
 	if not server:
 		return None
 	return {'server': server}
+
+
+def mask_proxy_url(proxy_url: str | None) -> str:
+	"""仅返回代理地址的协议、主机和端口，避免日志泄露认证信息。"""
+	if not proxy_url:
+		return '<not configured>'
+	try:
+		parsed = urlsplit(proxy_url)
+		host = parsed.hostname or '<unknown-host>'
+		port = f':{parsed.port}' if parsed.port else ''
+		return f'{parsed.scheme or "proxy"}://{host}{port}'
+	except ValueError:
+		return '<configured proxy>'

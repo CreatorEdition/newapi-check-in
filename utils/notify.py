@@ -21,15 +21,33 @@ class NotificationKit:
 		self.gotify_url = os.getenv('GOTIFY_URL')
 		self.gotify_token = os.getenv('GOTIFY_TOKEN')
 		gotify_priority_env = os.getenv('GOTIFY_PRIORITY', '9')
-		self.gotify_priority = int(gotify_priority_env) if gotify_priority_env.strip() else 9
+		try:
+			self.gotify_priority = int(gotify_priority_env) if gotify_priority_env.strip() else 9
+		except ValueError:
+			print('[WARN] GOTIFY_PRIORITY is invalid; using default priority 9')
+			self.gotify_priority = 9
 		self.telegram_bot_token = os.getenv('TELEGRAM_BOT_TOKEN')
 		self.telegram_chat_id = os.getenv('TELEGRAM_CHAT_ID')
 		self.bark_key = os.getenv('BARK_KEY')
 		self.bark_server = os.getenv('BARK_SERVER', 'https://api.day.app')
 
-	def _post_json(self, service: str, url: str, data: dict[str, Any]) -> httpx.Response:
-		with httpx.Client(timeout=30.0) as client:
-			response = client.post(url, json=data)
+	def _post_json(
+		self,
+		service: str,
+		url: str,
+		data: dict[str, Any],
+		*,
+		headers: dict[str, str] | None = None,
+	) -> httpx.Response:
+		try:
+			with httpx.Client(timeout=30.0) as client:
+				request_kwargs: dict[str, Any] = {'json': data}
+				if headers:
+					request_kwargs['headers'] = headers
+				response = client.post(url, **request_kwargs)
+		except Exception as exc:
+			# 网络异常可能包含 webhook/token URL，日志只保留异常类型。
+			raise RuntimeError(f'{service} network request failed: {type(exc).__name__}') from None
 
 		if response.status_code >= 400:
 			raise RuntimeError(f'{service} request failed: HTTP {response.status_code}')
@@ -80,7 +98,7 @@ class NotificationKit:
 			raise ValueError('PushPlus Token not configured')
 
 		data = {'token': self.pushplus_token, 'title': title, 'content': content, 'template': 'html'}
-		self._post_json('PushPlus', 'http://www.pushplus.plus/send', data)
+		self._post_json('PushPlus', 'https://www.pushplus.plus/send', data)
 
 	def send_serverPush(self, title: str, content: str):
 		if not self.server_push_key:
@@ -128,8 +146,7 @@ class NotificationKit:
 
 		data = {'title': title, 'message': content, 'priority': priority}
 
-		url = f'{self.gotify_url}?token={self.gotify_token}'
-		self._post_json('Gotify', url, data)
+		self._post_json('Gotify', self.gotify_url, data, headers={'X-Gotify-Key': self.gotify_token})
 
 	def send_telegram(self, title: str, content: str):
 		if not self.telegram_bot_token or not self.telegram_chat_id:

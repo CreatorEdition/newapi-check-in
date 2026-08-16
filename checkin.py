@@ -7,7 +7,9 @@ import asyncio
 import hashlib
 import json
 import os
+import shutil
 import sys
+import time
 from datetime import datetime
 
 if hasattr(sys.stdout, 'reconfigure'):
@@ -36,7 +38,8 @@ from utils.browser import (
 from utils.config import AccountConfig, AppConfig, load_accounts_config
 from utils.debug import debug_print, is_debug_enabled
 from utils.notify import notify
-from utils.proxy import get_playwright_proxy, get_proxy_server
+from utils.newapi_client import execute_checkin_request, normalize_message
+from utils.proxy import get_playwright_proxy, get_proxy_server, mask_proxy_url
 
 load_dotenv()
 
@@ -150,8 +153,11 @@ async def login_with_credentials(
 	print(f'[PROCESSING] {account_name}: Logging in with email/password...')
 
 	login_url = f'{provider_config.domain}{provider_config.login_path}'
+	profile_account_key = hashlib.sha256(
+		f'{provider_name}\x00{email.strip().lower()}'.encode('utf-8')
+	).hexdigest()[:24]
 	settings = load_browser_login_settings(
-		account_name,
+		profile_account_key,
 		provider_name,
 		persist_profile=provider_config.persist_profile,
 	)
@@ -213,6 +219,21 @@ async def login_with_credentials(
 			await context.close()
 			return None
 
+		observed_email = next(
+			(
+				str(user_profile.get(key)).strip().lower()
+				for key in ('email', 'email_address', 'user_email')
+				if user_profile.get(key)
+			),
+			None,
+		)
+		if observed_email and observed_email != email.strip().lower():
+			print(f'[FAILED] {account_name}: Persistent browser profile belongs to another account')
+			await context.close()
+			if settings.persist_profile:
+				shutil.rmtree(settings.profile_dir, ignore_errors=True)
+			return None
+
 		cookies = await context.cookies()
 		all_cookies = {
 			cookie.get('name'): cookie.get('value') for cookie in cookies if cookie.get('name') and cookie.get('value')
@@ -236,24 +257,51 @@ async def login_with_credentials(
 
 def get_user_info(client, headers, user_info_url: str):
 	"""获取用户信息"""
-	try:
-		response = client.get(user_info_url, headers=headers, timeout=30)
+	for attempt in range(3):
+		try:
+			response = client.get(user_info_url, headers=headers, timeout=30)
+			if response.status_code in {408, 429} or response.status_code >= 500:
+				if attempt < 2:
+					time.sleep(0.5 * (2**attempt))
+					continue
 
-		if response.status_code == 200:
-			data = response.json()
-			if data.get('success'):
-				user_data = data.get('data', {})
-				quota = round(user_data.get('quota', 0) / 500000, 2)
-				used_quota = round(user_data.get('used_quota', 0) / 500000, 2)
+			payload = response.json()
+			if not isinstance(payload, dict):
+				return {'success': False, 'error': 'Failed to get user info: response is not an object'}
+
+			data = payload.get('data', payload)
+			success_value = payload.get('success')
+			is_success = (
+				success_value
+				if isinstance(success_value, bool)
+				else payload.get('code') in {0, '0', 200, '200'}
+			)
+			if is_success and isinstance(data, dict):
+				quota_raw = data.get('quota', 0)
+				used_raw = data.get('used_quota', 0)
+				if not isinstance(quota_raw, (int, float)) or not isinstance(used_raw, (int, float)):
+					return {'success': False, 'error': 'Failed to get user info: invalid quota data'}
+				quota = round(quota_raw / 500000, 2)
+				used_quota = round(used_raw / 500000, 2)
 				return {
 					'success': True,
 					'quota': quota,
 					'used_quota': used_quota,
 					'display': f':money: Current balance: ${quota}, Used: ${used_quota}',
 				}
-		return {'success': False, 'error': f'Failed to get user info: HTTP {response.status_code}'}
-	except Exception as e:
-		return {'success': False, 'error': f'Failed to get user info: {str(e)[:50]}...'}
+
+			message = normalize_message(
+				payload.get('message') or payload.get('msg') or payload.get('error')
+			) or f'HTTP {response.status_code}'
+			return {'success': False, 'error': f'Failed to get user info: {message[:120]}'}
+		except (httpx.RequestError, json.JSONDecodeError, TypeError, ValueError) as exc:
+			if attempt < 2:
+				time.sleep(0.5 * (2**attempt))
+				continue
+			return {'success': False, 'error': f'Failed to get user info: {type(exc).__name__}'}
+		except Exception as exc:
+			return {'success': False, 'error': f'Failed to get user info: {type(exc).__name__}'}
+	return {'success': False, 'error': 'Failed to get user info: retry limit exceeded'}
 
 
 async def prepare_cookies(account_name: str, provider_config, user_cookies: dict) -> dict | None:
@@ -274,45 +322,27 @@ async def prepare_cookies(account_name: str, provider_config, user_cookies: dict
 	else:
 		print(f'[INFO] {account_name}: Bypass WAF not required, using user cookies directly')
 
-	return {**waf_cookies, **user_cookies}
+	# WAF 浏览器刚生成的 Cookie 必须覆盖用户提供的旧值，避免复用失效挑战 Cookie。
+	return {**user_cookies, **waf_cookies}
 
 
 def execute_check_in(client, account_name: str, provider_config, headers: dict):
 	"""执行签到请求"""
 	print(f'[NETWORK] {account_name}: Executing check-in')
-
-	checkin_headers = headers.copy()
-	checkin_headers.update({'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest'})
-
-	sign_in_url = f'{provider_config.domain}{provider_config.sign_in_path}'
-	response = client.post(sign_in_url, headers=checkin_headers, timeout=30)
-
-	print(f'[RESPONSE] {account_name}: Response status code {response.status_code}')
-
-	if response.status_code == 200:
-		try:
-			result = response.json()
-			if result.get('ret') == 1 or result.get('code') == 0 or result.get('success'):
-				print(f'[SUCCESS] {account_name}: Check-in successful!')
-				return True
-			else:
-				error_msg = result.get('msg', result.get('message', 'Unknown error'))
-				already_checked_keywords = ['已经签到', '已签到', '重复签到', 'already checked', 'already signed']
-				if any(keyword in error_msg.lower() for keyword in already_checked_keywords):
-					print(f'[SUCCESS] {account_name}: Already checked in today')
-					return True
-				print(f'[FAILED] {account_name}: Check-in failed - {error_msg}')
-				return False
-		except json.JSONDecodeError:
-			if 'success' in response.text.lower():
-				print(f'[SUCCESS] {account_name}: Check-in successful!')
-				return True
-			else:
-				print(f'[FAILED] {account_name}: Check-in failed - Invalid response format')
-				return False
+	result = execute_checkin_request(
+		client,
+		provider_config.domain,
+		headers,
+		provider_config.sign_in_path or '/api/user/sign_in',
+		checkin_path=getattr(provider_config, 'checkin_path', None) or '/api/user/checkin',
+		timeout=30,
+	)
+	status = result.status.value
+	if result.succeeded:
+		print(f'[SUCCESS] {account_name}: {result.message} ({status})')
 	else:
-		print(f'[FAILED] {account_name}: Check-in failed - HTTP {response.status_code}')
-		return False
+		print(f'[FAILED] {account_name}: {result.message} ({status})')
+	return result.succeeded
 
 
 def format_check_in_notification(detail: dict) -> str:
@@ -396,7 +426,8 @@ async def check_in_account(account: AccountConfig, account_index: int, app_confi
 
 	print(f'[AUTH] {account_name}: Using auth method -> {auth_method}')
 
-	return run_check_in_requests(
+	return await asyncio.to_thread(
+		run_check_in_requests,
 		all_cookies,
 		account,
 		account_name,
@@ -415,14 +446,14 @@ def run_check_in_requests(
 	api_user_override: str | None = None,
 	use_proxy: bool = False,
 ) -> tuple[bool, dict | None, dict | None]:
-	"""执行 HTTP 签到请求（同步，避免在 async 上下文中使用阻塞 httpx）。"""
+	"""执行 HTTP 签到请求；异步调用方通过线程池隔离阻塞式 httpx。"""
 	try:
-		client_kwargs: dict = {'http2': True, 'timeout': 30.0}
+		client_kwargs: dict = {'http2': True, 'timeout': 30.0, 'trust_env': False}
 		proxy_url = get_proxy_server(use_proxy=use_proxy)
 		if proxy_url:
 			client_kwargs['proxy'] = proxy_url
 			if is_debug_enabled():
-				print(f'[INFO] {account_name}: HTTP client proxy enabled: {proxy_url}')
+				print(f'[INFO] {account_name}: HTTP client proxy enabled: {mask_proxy_url(proxy_url)}')
 			else:
 				print(f'[INFO] {account_name}: HTTP client proxy enabled')
 		elif use_proxy:
@@ -432,13 +463,14 @@ def run_check_in_requests(
 			client.cookies.update(all_cookies)
 
 			headers = {
-				'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36',
+				'User-Agent': os.getenv(
+					'CHECKIN_USER_AGENT',
+					'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36',
+				),
 				'Accept': 'application/json, text/plain, */*',
 				'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-				'Accept-Encoding': 'gzip, deflate, br, zstd',
 				'Referer': provider_config.domain,
 				'Origin': provider_config.domain,
-				'Connection': 'keep-alive',
 				'Sec-Fetch-Dest': 'empty',
 				'Sec-Fetch-Mode': 'cors',
 				'Sec-Fetch-Site': 'same-origin',
@@ -479,7 +511,7 @@ async def main():
 		print('[INFO] DEBUG_MODE enabled')
 		proxy_server = os.getenv('CHECKIN_PROXY_URL', '').strip()
 		if proxy_server:
-			print(f'[INFO] Proxy endpoint available: {proxy_server} (enabled per provider use_proxy)')
+			print(f'[INFO] Proxy endpoint available: {mask_proxy_url(proxy_server)} (enabled per provider use_proxy)')
 		else:
 			print('[INFO] CHECKIN_PROXY_URL not set; providers with use_proxy=true will run without proxy')
 	else:
@@ -514,7 +546,7 @@ async def main():
 	balance_changed = False
 
 	for i, account in enumerate(accounts):
-		account_key = f'account_{i + 1}'
+		account_key = account.get_storage_key(i)
 		try:
 			success, user_info_before, user_info_after = await check_in_account(account, i, app_config)
 			if success:
@@ -589,7 +621,7 @@ async def main():
 
 	if balance_changed:
 		for i, account in enumerate(accounts):
-			account_key = f'account_{i + 1}'
+			account_key = account.get_storage_key(i)
 			if account_key in account_check_in_details:
 				detail = account_check_in_details[account_key]
 				account_name = detail['name']
@@ -632,10 +664,23 @@ async def main():
 		print(notify_content)
 		notify.push_message('AnyRouter Check-in Alert', notify_content, msg_type='text')
 		print('[NOTIFY] Notification sent due to failures or balance changes')
+	elif need_notify:
+		# 首次运行或余额变化但缺少前置余额时，也必须保留可见的通知摘要。
+		summary = (
+			f'[STATS] Check-in result statistics:\n'
+			f'[SUCCESS] Success: {success_count}/{total_count}\n'
+			f'[FAIL] Failed: {total_count - success_count}/{total_count}'
+		)
+		print(summary)
+		notify.push_message('AnyRouter Check-in Alert', summary, msg_type='text')
+		print('[NOTIFY] Summary notification sent')
 	else:
 		print('[INFO] All accounts successful and no balance changes detected, notification skipped')
 
-	sys.exit(0 if success_count > 0 else 1)
+	fail_on_partial = os.getenv('FAIL_ON_PARTIAL_SUCCESS', '').strip().lower() in {'1', 'true', 'yes', 'on'}
+	if success_count == 0 or (fail_on_partial and success_count < total_count):
+		sys.exit(1)
+	sys.exit(0)
 
 
 def run_main():

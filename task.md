@@ -1,0 +1,28 @@
+# NewAPI 签到优化任务
+
+状态：✅ 已完成
+
+## 本轮范围
+
+1. 修复 CI 中浏览器 Profile 持久化、账号串号和敏感代理日志问题。
+2. 统一 NewAPI 请求/响应处理，支持 `sign_in -> checkin` 回退及明确结果分类。
+3. 修复 WAF Cookie 合并、HTTP/2 请求头、配置校验和通知配置容错。
+4. 增加 GitHub Actions 并发保护与质量检查可靠性。
+5. 补充离线单元测试，并同步 README 使用说明。
+
+## 验收标准
+
+- 不在日志、缓存或测试输出中暴露 Cookie、Token、密码或完整代理 URL。
+- `sign_in` 请求为空 body 且不带 JSON Content-Type；失败时可回退 `checkin`。
+- 401/403、WAF HTML、已签到、签到关闭和普通失败可区分。
+- 现有测试与新增测试通过；无法在本地运行的命令必须明确记录。
+- 完成后更新为：✅ 已完成，并记录剩余未验证风险。
+
+## 验证记录
+
+- ✅ Python `compileall` 通过。
+- ✅ NewAPI 适配层、配置校验和代理脱敏离线 smoke test 通过。
+- ✅ 旧油猴脚本 Node 回归测试通过（146 项）。
+- ✅ `git diff --check` 通过。
+- ⚠️ 当前 Windows 环境未提供 `uv`、pytest、Ruff、MyPy、Bandit，完整 Python 质量门禁需由 GitHub Actions 复核。
+- ⚠️ 未执行真实站点登录、签到、代理或通知请求，避免触碰用户登录态和外部服务。
