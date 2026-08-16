@@ -219,11 +219,13 @@ jobs:
 
       - name: 发布检查报告到 PR
         if: always() && github.event_name == 'pull_request'
+        env:
+          QUALITY_REPORT: ${{ steps.generate-report.outputs.REPORT }}
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const report = `${{ steps.generate-report.outputs.REPORT }}`;
+            const report = process.env.QUALITY_REPORT || '';
 
             // 查找之前的评论
             const { data: comments } = await github.rest.issues.listComments({
