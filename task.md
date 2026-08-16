@@ -25,5 +25,7 @@
 - ✅ 旧油猴脚本 Node 回归测试通过（146 项）。
 - ✅ `git diff --check` 通过。
 - ✅ 使用官方 Ruff 0.12.11 二进制复核，格式与 lint 均通过。
-- ⚠️ 当前 Windows 环境无法从 PyPI 下载完整依赖，完整 Python pytest/MyPy/Bandit 仍由 GitHub Actions 复核。
+- ✅ GitHub Actions `PR Quality Checks` run `31977284606` 通过：Ruff、格式、MyPy、Bandit、Pytest 全部通过（40 passed、1 skipped）。
+- ⚠️ 当前 Windows 环境无法从 PyPI 下载完整依赖，本地未重复完整 Python 门禁；以 Actions Linux 结果为准。
+- ✅ CloakBrowser 安装修复已由 run `31973407249` 验证成功。
 - ⚠️ 未执行真实站点登录、签到、代理或通知请求，避免触碰用户登录态和外部服务。
