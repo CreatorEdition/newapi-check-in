@@ -297,11 +297,7 @@ def load_accounts_config() -> list[AccountConfig] | None:
 				return None
 			if isinstance(account_dict.get('cookies'), dict):
 				for cookie_name, cookie_value in account_dict['cookies'].items():
-					if (
-						not isinstance(cookie_name, str)
-						or not cookie_name.strip()
-						or not isinstance(cookie_value, str)
-					):
+					if not isinstance(cookie_name, str) or not cookie_name.strip() or not isinstance(cookie_value, str):
 						print(f'ERROR: Account {i + 1} cookies must map non-empty names to string values')
 						return None
 			if account_dict.get('email') is not None and not isinstance(account_dict.get('email'), str):
@@ -316,12 +312,12 @@ def load_accounts_config() -> list[AccountConfig] | None:
 				print(f'ERROR: Account {i + 1} provider field must be a non-empty string')
 				return None
 
-			if 'name' in account_dict and (not isinstance(account_dict['name'], str) or not account_dict['name'].strip()):
+			if 'name' in account_dict and (
+				not isinstance(account_dict['name'], str) or not account_dict['name'].strip()
+			):
 				print(f'ERROR: Account {i + 1} name field cannot be empty')
 				return None
-			if 'id' in account_dict and (
-				not isinstance(account_dict['id'], str) or not account_dict['id'].strip()
-			):
+			if 'id' in account_dict and (not isinstance(account_dict['id'], str) or not account_dict['id'].strip()):
 				print(f'ERROR: Account {i + 1} id field must be a non-empty string')
 				return None
 			account_id = account_dict.get('id')

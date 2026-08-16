@@ -37,8 +37,8 @@ from utils.browser import (
 )
 from utils.config import AccountConfig, AppConfig, load_accounts_config
 from utils.debug import debug_print, is_debug_enabled
-from utils.notify import notify
 from utils.newapi_client import execute_checkin_request, normalize_message
+from utils.notify import notify
 from utils.proxy import get_playwright_proxy, get_proxy_server, mask_proxy_url
 
 load_dotenv()
@@ -153,9 +153,7 @@ async def login_with_credentials(
 	print(f'[PROCESSING] {account_name}: Logging in with email/password...')
 
 	login_url = f'{provider_config.domain}{provider_config.login_path}'
-	profile_account_key = hashlib.sha256(
-		f'{provider_name}\x00{email.strip().lower()}'.encode('utf-8')
-	).hexdigest()[:24]
+	profile_account_key = hashlib.sha256(f'{provider_name}\x00{email.strip().lower()}'.encode('utf-8')).hexdigest()[:24]
 	settings = load_browser_login_settings(
 		profile_account_key,
 		provider_name,
@@ -235,9 +233,12 @@ async def login_with_credentials(
 			return None
 
 		cookies = await context.cookies()
-		all_cookies = {
-			cookie.get('name'): cookie.get('value') for cookie in cookies if cookie.get('name') and cookie.get('value')
-		}
+		all_cookies: dict[str, str] = {}
+		for cookie in cookies:
+			cookie_name = cookie.get('name')
+			cookie_value = cookie.get('value')
+			if isinstance(cookie_name, str) and cookie_name and isinstance(cookie_value, str) and cookie_value:
+				all_cookies[cookie_name] = cookie_value
 		api_user = str(user_profile['id']) if user_profile.get('id') is not None else None
 
 		success_msg = f'[SUCCESS] {account_name}: Login successful, got {len(all_cookies)} cookies'
@@ -272,9 +273,7 @@ def get_user_info(client, headers, user_info_url: str):
 			data = payload.get('data', payload)
 			success_value = payload.get('success')
 			is_success = (
-				success_value
-				if isinstance(success_value, bool)
-				else payload.get('code') in {0, '0', 200, '200'}
+				success_value if isinstance(success_value, bool) else payload.get('code') in {0, '0', 200, '200'}
 			)
 			if is_success and isinstance(data, dict):
 				quota_raw = data.get('quota', 0)
@@ -290,9 +289,10 @@ def get_user_info(client, headers, user_info_url: str):
 					'display': f':money: Current balance: ${quota}, Used: ${used_quota}',
 				}
 
-			message = normalize_message(
-				payload.get('message') or payload.get('msg') or payload.get('error')
-			) or f'HTTP {response.status_code}'
+			message = (
+				normalize_message(payload.get('message') or payload.get('msg') or payload.get('error'))
+				or f'HTTP {response.status_code}'
+			)
 			return {'success': False, 'error': f'Failed to get user info: {message[:120]}'}
 		except (httpx.RequestError, json.JSONDecodeError, TypeError, ValueError) as exc:
 			if attempt < 2:
@@ -666,13 +666,13 @@ async def main():
 		print('[NOTIFY] Notification sent due to failures or balance changes')
 	elif need_notify:
 		# 首次运行或余额变化但缺少前置余额时，也必须保留可见的通知摘要。
-		summary = (
+		summary_text = (
 			f'[STATS] Check-in result statistics:\n'
 			f'[SUCCESS] Success: {success_count}/{total_count}\n'
 			f'[FAIL] Failed: {total_count - success_count}/{total_count}'
 		)
-		print(summary)
-		notify.push_message('AnyRouter Check-in Alert', summary, msg_type='text')
+		print(summary_text)
+		notify.push_message('AnyRouter Check-in Alert', summary_text, msg_type='text')
 		print('[NOTIFY] Summary notification sent')
 	else:
 		print('[INFO] All accounts successful and no balance changes detected, notification skipped')

@@ -24,5 +24,6 @@
 - ✅ NewAPI 适配层、配置校验和代理脱敏离线 smoke test 通过。
 - ✅ 旧油猴脚本 Node 回归测试通过（146 项）。
 - ✅ `git diff --check` 通过。
-- ⚠️ 当前 Windows 环境未提供 `uv`、pytest、Ruff、MyPy、Bandit，完整 Python 质量门禁需由 GitHub Actions 复核。
+- ✅ 使用官方 Ruff 0.12.11 二进制复核，格式与 lint 均通过。
+- ⚠️ 当前 Windows 环境无法从 PyPI 下载完整依赖，完整 Python pytest/MyPy/Bandit 仍由 GitHub Actions 复核。
 - ⚠️ 未执行真实站点登录、签到、代理或通知请求，避免触碰用户登录态和外部服务。

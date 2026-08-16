@@ -47,10 +47,18 @@ def test_sign_in_falls_back_to_checkin_without_json_header():
 def test_response_statuses_are_classified_without_leaking_body():
 	assert classify_response(FakeResponse(401, {'message': 'token expired'})).status is CheckinStatus.NEEDS_LOGIN
 	assert classify_response(FakeResponse(200, {'msg': '今日已签到'})).status is CheckinStatus.ALREADY_SIGNED
-	assert classify_response(
-		FakeResponse(403, text='<!doctype html><html>verify you are human</html>', headers={'content-type': 'text/html'})
-	).status is CheckinStatus.NEEDS_HUMAN
-	assert classify_response(FakeResponse(200, {'code': 500, 'message': {'detail': '签到关闭'}})).status is CheckinStatus.DISABLED
+	assert (
+		classify_response(
+			FakeResponse(
+				403, text='<!doctype html><html>verify you are human</html>', headers={'content-type': 'text/html'}
+			)
+		).status
+		is CheckinStatus.NEEDS_HUMAN
+	)
+	assert (
+		classify_response(FakeResponse(200, {'code': 500, 'message': {'detail': '签到关闭'}})).status
+		is CheckinStatus.DISABLED
+	)
 
 
 def test_checkin_body_skips_sign_in_endpoint():

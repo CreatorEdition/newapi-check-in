@@ -6,7 +6,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
@@ -69,7 +69,7 @@ def redact_message(value: object) -> str:
 def _response_json(response: Any) -> object | None:
 	"""安全读取响应 JSON，解析失败时返回 None。"""
 	try:
-		return response.json()
+		return cast(object | None, response.json())
 	except (ValueError, TypeError, AttributeError):
 		return None
 
@@ -130,9 +130,7 @@ def _is_envelope_success(status_code: int, payload: object) -> bool:
 		return payload['code'] in {0, '0', 200, '200', 'SUCCESS'}
 	if 'ret' in payload:
 		return payload['ret'] in {1, '1', True}
-	message = normalize_message(
-		payload.get('message') or payload.get('msg') or payload.get('detail')
-	)
+	message = normalize_message(payload.get('message') or payload.get('msg') or payload.get('detail'))
 	return any(keyword in message.lower() for keyword in ('success', 'successful', 'ok', '签到成功', '签到完成'))
 
 
@@ -169,7 +167,9 @@ def _is_auth_failure(status_code: int, message: str) -> bool:
 def _is_human_verification(message: str) -> bool:
 	"""判断响应是否要求验证码或人工验证。"""
 	text = message.lower()
-	return any(keyword in text for keyword in ('turnstile', 'captcha', '验证码', '人机验证', 'cloudflare', 'waf', 'pow'))
+	return any(
+		keyword in text for keyword in ('turnstile', 'captcha', '验证码', '人机验证', 'cloudflare', 'waf', 'pow')
+	)
 
 
 def _is_feature_disabled(message: str) -> bool:

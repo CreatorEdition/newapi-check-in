@@ -1,5 +1,6 @@
 import sys
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
@@ -12,7 +13,9 @@ def test_browser_login_settings_records_profile_persistence(monkeypatch, tmp_pat
 	settings = load_browser_login_settings('Account 1', 'agentrouter', persist_profile=False)
 
 	assert settings.persist_profile is False
-	assert settings.profile_dir == tmp_path / _safe_profile_component('agentrouter') / _safe_profile_component('Account 1')
+	assert settings.profile_dir == tmp_path / _safe_profile_component('agentrouter') / _safe_profile_component(
+		'Account 1'
+	)
 
 
 def test_profile_component_cannot_escape_base_directory(monkeypatch, tmp_path):
@@ -52,7 +55,7 @@ async def test_launch_login_context_uses_persistent_context_when_enabled(monkeyp
 
 	result = await launch_login_context(settings)
 
-	assert result is context
+	assert cast(Any, result) is context
 	assert calls['profile_dir'] == str(settings.profile_dir)
 
 
@@ -104,6 +107,6 @@ async def test_launch_login_context_closes_browser_for_ephemeral_context(monkeyp
 	context = await launch_login_context(settings)
 	await context.close()
 
-	assert context.closed is True
+	assert cast(Any, context).closed is True
 	assert browser.closed is True
 	assert not settings.profile_dir.exists()

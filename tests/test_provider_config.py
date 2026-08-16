@@ -104,7 +104,9 @@ def test_account_id_is_used_for_stable_storage_key(monkeypatch):
 
 	from utils.config import load_accounts_config
 
-	assert load_accounts_config()[0].get_storage_key(0) == 'stable-main'
+	accounts = load_accounts_config()
+	assert accounts is not None
+	assert accounts[0].get_storage_key(0) == 'stable-main'
 
 
 def test_duplicate_account_ids_are_rejected(monkeypatch):
