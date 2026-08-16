@@ -15,8 +15,9 @@
 
 用于 Claude Code 中转站 Any Router 网站多账号每日签到，一次 $25，限时注册即送 100 美金。业界良心，支持 Claude Sonnet 4.5、GPT-5-Codex、Claude Code 百万上下文（使用 `/model sonnet[1m]` 开启），`gemini-2.5-pro` 模型。
 
+## 推荐免费公益站
 https://anyrouter.top/register?aff=yqC1   
-https://agentrouter.org/register?aff=aJlJ
+https://agentrouter.org/register?aff=aJlJ   
 https://gorouter.app/sign-up?aff=Y66b
 
 ## 功能特性
