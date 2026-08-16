@@ -18,6 +18,8 @@ jobs:
       PYTHONIOENCODING: utf-8
       PYTHONUNBUFFERED: 1
       DEBUG_MODE: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.debug == 'true' && 'true' || 'false' }}
+      # CI 中禁用 CloakBrowser 后台更新检查与下载，避免安装命令退出时触发 SIGSEGV。
+      CLOAKBROWSER_AUTO_UPDATE: 'false'
     steps:
     - uses: actions/checkout@v6
 
