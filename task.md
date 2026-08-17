@@ -1,12 +1,20 @@
 # NewAPI 签到优化任务
 
-状态：🔄 进行中
+状态：✅ 已完成
 
 ## API 优先增量任务（2026-08-17）
 
 1. 增加 `api_key`/`jwt` 令牌配置，按 `api_key → jwt → cookies` 优先级调用 NewAPI。
 2. 令牌和 Cookies API 请求失败后，才按 WAF Cookie、邮箱密码浏览器顺序恢复。
 3. 补充 API-first 离线测试与 README 配置说明。
+
+## API 优先验收记录
+
+- ✅ `api_key → jwt → cookies` 顺序已实现，令牌请求发送 `Authorization: Bearer` 与 `New-Api-User`。
+- ✅ Cookie 仅在令牌失败后直接调用 API；WAF Cookie 仅在明确挑战后刷新；邮箱密码仅最后恢复。
+- ✅ API-first 离线测试覆盖令牌成功、Cookie 回退、WAF 刷新和浏览器最后兜底。
+- ✅ GitHub Actions run `32008359353` 通过：Ruff、MyPy、Bandit、Pytest（47 passed、1 skipped）。
+- ⚠️ 未执行真实站点登录、签到、代理或通知请求。
 
 ## 本轮范围
 
