@@ -1,6 +1,12 @@
 # NewAPI 签到优化任务
 
-状态：✅ 已完成
+状态：🔄 进行中
+
+## API 优先增量任务（2026-08-17）
+
+1. 增加 `api_key`/`jwt` 令牌配置，按 `api_key → jwt → cookies` 优先级调用 NewAPI。
+2. 令牌和 Cookies API 请求失败后，才按 WAF Cookie、邮箱密码浏览器顺序恢复。
+3. 补充 API-first 离线测试与 README 配置说明。
 
 ## 本轮范围
 

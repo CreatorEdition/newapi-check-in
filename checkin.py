@@ -10,6 +10,7 @@ import os
 import shutil
 import sys
 import time
+from dataclasses import dataclass
 from datetime import datetime
 
 if hasattr(sys.stdout, 'reconfigure'):
@@ -37,13 +38,31 @@ from utils.browser import (
 )
 from utils.config import AccountConfig, AppConfig, load_accounts_config
 from utils.debug import debug_print, is_debug_enabled
-from utils.newapi_client import execute_checkin_request, normalize_message
+from utils.newapi_client import (
+	CheckinResult,
+	CheckinStatus,
+	classify_response,
+	execute_checkin_request,
+	normalize_message,
+	redact_message,
+)
 from utils.notify import notify
 from utils.proxy import get_playwright_proxy, get_proxy_server, mask_proxy_url
 
 load_dotenv()
 
 BALANCE_HASH_FILE = 'balance_hash.txt'
+
+
+@dataclass(frozen=True)
+class CheckInRunResult:
+	"""单次 API/浏览器恢复流程的脱敏结果。"""
+
+	success: bool
+	user_info_before: dict | None
+	user_info_after: dict | None
+	status: CheckinStatus
+	message: str = ''
 
 
 def load_balance_hash():
@@ -259,6 +278,7 @@ async def login_with_credentials(
 def get_user_info(client, headers, user_info_url: str):
 	"""获取用户信息"""
 	for attempt in range(3):
+		response = None
 		try:
 			response = client.get(user_info_url, headers=headers, timeout=30)
 			if response.status_code in {408, 429} or response.status_code >= 500:
@@ -268,7 +288,11 @@ def get_user_info(client, headers, user_info_url: str):
 
 			payload = response.json()
 			if not isinstance(payload, dict):
-				return {'success': False, 'error': 'Failed to get user info: response is not an object'}
+				return {
+					'success': False,
+					'error': 'Failed to get user info: response is not an object',
+					'_checkin_status': CheckinStatus.FAILED.value,
+				}
 
 			data = payload.get('data', payload)
 			success_value = payload.get('success')
@@ -279,7 +303,11 @@ def get_user_info(client, headers, user_info_url: str):
 				quota_raw = data.get('quota', 0)
 				used_raw = data.get('used_quota', 0)
 				if not isinstance(quota_raw, (int, float)) or not isinstance(used_raw, (int, float)):
-					return {'success': False, 'error': 'Failed to get user info: invalid quota data'}
+					return {
+						'success': False,
+						'error': 'Failed to get user info: invalid quota data',
+						'_checkin_status': CheckinStatus.FAILED.value,
+					}
 				quota = round(quota_raw / 500000, 2)
 				used_quota = round(used_raw / 500000, 2)
 				return {
@@ -287,21 +315,46 @@ def get_user_info(client, headers, user_info_url: str):
 					'quota': quota,
 					'used_quota': used_quota,
 					'display': f':money: Current balance: ${quota}, Used: ${used_quota}',
+					'_checkin_status': CheckinStatus.SUCCESS.value,
 				}
 
-			message = (
-				normalize_message(payload.get('message') or payload.get('msg') or payload.get('error'))
-				or f'HTTP {response.status_code}'
+			classification = classify_response(response, stage='user_info')
+			message = redact_message(payload.get('message') or payload.get('msg') or payload.get('error')) or (
+				f'HTTP {response.status_code}'
 			)
-			return {'success': False, 'error': f'Failed to get user info: {message[:120]}'}
+			return {
+				'success': False,
+				'error': f'Failed to get user info: {message[:120]}',
+				'_checkin_status': classification.status.value,
+			}
 		except (httpx.RequestError, json.JSONDecodeError, TypeError, ValueError) as exc:
 			if attempt < 2:
 				time.sleep(0.5 * (2**attempt))
 				continue
-			return {'success': False, 'error': f'Failed to get user info: {type(exc).__name__}'}
+			if response is not None:
+				classification = classify_response(response, stage='user_info')
+				if classification.status is not CheckinStatus.FAILED or classification.diagnostics.get('isHtmlChallenge'):
+					return {
+						'success': False,
+						'error': f'Failed to get user info: {classification.message[:120]}',
+						'_checkin_status': classification.status.value,
+					}
+			return {
+				'success': False,
+				'error': f'Failed to get user info: {type(exc).__name__}',
+				'_checkin_status': CheckinStatus.FAILED.value,
+			}
 		except Exception as exc:
-			return {'success': False, 'error': f'Failed to get user info: {type(exc).__name__}'}
-	return {'success': False, 'error': 'Failed to get user info: retry limit exceeded'}
+			return {
+				'success': False,
+				'error': f'Failed to get user info: {type(exc).__name__}',
+				'_checkin_status': CheckinStatus.FAILED.value,
+			}
+	return {
+		'success': False,
+		'error': 'Failed to get user info: retry limit exceeded',
+		'_checkin_status': CheckinStatus.FAILED.value,
+	}
 
 
 async def prepare_cookies(account_name: str, provider_config, user_cookies: dict) -> dict | None:
@@ -342,7 +395,7 @@ def execute_check_in(client, account_name: str, provider_config, headers: dict):
 		print(f'[SUCCESS] {account_name}: {result.message} ({status})')
 	else:
 		print(f'[FAILED] {account_name}: {result.message} ({status})')
-	return result.succeeded
+	return result
 
 
 def format_check_in_notification(detail: dict) -> str:
@@ -380,24 +433,127 @@ def format_check_in_notification(detail: dict) -> str:
 	return '\n'.join(lines)
 
 
-async def check_in_account(account: AccountConfig, account_index: int, app_config: AppConfig):
-	"""为单个账号执行签到操作"""
+def _status_from_user_info(user_info: dict | None) -> CheckinStatus:
+	"""从用户信息请求结果读取统一状态。"""
+	if not user_info:
+		return CheckinStatus.FAILED
+	raw_status = user_info.get('_checkin_status')
+	try:
+		return CheckinStatus(raw_status)
+	except (TypeError, ValueError):
+		return CheckinStatus.SUCCESS if user_info.get('success') else CheckinStatus.FAILED
+
+
+def _run_failed_result(message: str, status: CheckinStatus = CheckinStatus.FAILED) -> CheckInRunResult:
+	"""构造没有用户信息的失败结果。"""
+	return CheckInRunResult(False, None, None, status, message)
+
+
+def _is_terminal_result(result: CheckInRunResult) -> bool:
+	"""判断结果是否无需继续切换凭据。"""
+	return result.success or result.status in {CheckinStatus.ALREADY_SIGNED, CheckinStatus.DISABLED}
+
+
+async def _run_api_attempt(
+	all_cookies: dict | None,
+	account: AccountConfig,
+	account_name: str,
+	provider_config,
+	*,
+	api_token: str | None = None,
+	api_user_override: str | None = None,
+) -> CheckInRunResult:
+	"""通过线程池执行一次 API 尝试。"""
+	return await asyncio.to_thread(
+		run_check_in_requests,
+		all_cookies,
+		account,
+		account_name,
+		provider_config,
+		api_user_override=api_user_override,
+		api_token=api_token,
+		use_proxy=provider_config.use_proxy,
+	)
+
+
+async def check_in_account(account: AccountConfig, account_index: int, app_config: AppConfig) -> CheckInRunResult:
+	"""按令牌、Cookie、WAF 和浏览器顺序为单个账号执行签到。"""
 	account_name = account.get_display_name(account_index)
 	print(f'\n[PROCESSING] Starting to process {account_name}')
 
 	provider_config = app_config.get_provider(account.provider)
 	if not provider_config:
-		print(f'[FAILED] {account_name}: Provider "{account.provider}" not found in configuration')
-		return False, None, None
+		return _run_failed_result(f'Provider "{account.provider}" not found in configuration')
 
 	print(f'[INFO] {account_name}: Using provider "{account.provider}" ({provider_config.domain})')
+	user_cookies = parse_cookies(account.cookies)
+	last_result: CheckInRunResult | None = None
+	human_verification_seen = False
 
-	# 邮箱密码优先
-	all_cookies = None
-	resolved_api_user: str | None = None
-	auth_method = None
+	# 与旧油猴脚本一致：显式令牌优先于隐式 Cookie，且 api_key 优先于 jwt。
+	for token_type, api_token in account.get_api_tokens():
+		print(f'[AUTH] {account_name}: Trying NewAPI {token_type} (API first)')
+		result = await _run_api_attempt(
+			{},
+			account,
+			account_name,
+			provider_config,
+			api_token=api_token,
+			api_user_override=account.api_user,
+		)
+		if _is_terminal_result(result):
+			return result
+		last_result = result
+		human_verification_seen = human_verification_seen or result.status is CheckinStatus.NEEDS_HUMAN
+		print(f'[WARN] {account_name}: {token_type} API attempt did not finish ({result.status.value})')
+
+	# 兼容旧配置：Cookie 也先直接请求，不能在 API 前无条件打开登录页。
+	if user_cookies:
+		print(f'[AUTH] {account_name}: Trying session cookies after token API failure')
+		result = await _run_api_attempt(
+			user_cookies,
+			account,
+			account_name,
+			provider_config,
+			api_user_override=account.api_user,
+		)
+		if _is_terminal_result(result):
+			return result
+		last_result = result
+		human_verification_seen = human_verification_seen or result.status is CheckinStatus.NEEDS_HUMAN
+
+	# 只有 API 明确返回 WAF/验证码时才申请浏览器生成挑战 Cookie。
+	if human_verification_seen and provider_config.needs_waf_cookies():
+		print(f'[AUTH] {account_name}: API reported WAF/human verification; refreshing WAF cookies')
+		prepared_cookies = await prepare_cookies(account_name, provider_config, user_cookies)
+		if prepared_cookies:
+			for token_type, api_token in account.get_api_tokens():
+				result = await _run_api_attempt(
+					prepared_cookies,
+					account,
+					account_name,
+					provider_config,
+					api_token=api_token,
+					api_user_override=account.api_user,
+				)
+				if _is_terminal_result(result):
+					return result
+				last_result = result
+
+			result = await _run_api_attempt(
+				prepared_cookies,
+				account,
+				account_name,
+				provider_config,
+				api_user_override=account.api_user,
+			)
+			if _is_terminal_result(result):
+				return result
+			last_result = result
+
+	# 浏览器登录只能作为所有 API 凭据均失败后的最后恢复路径。
 	if account.has_login_credentials():
-		print(f'[INFO] {account_name}: Attempting email/password login (priority)...')
+		print(f'[AUTH] {account_name}: API authentication failed; falling back to browser login')
 		assert account.email is not None and account.password is not None
 		login_result = await login_with_credentials(
 			account_name,
@@ -407,46 +563,32 @@ async def check_in_account(account: AccountConfig, account_index: int, app_confi
 			account.password,
 		)
 		if login_result:
-			all_cookies = login_result.cookies
-			resolved_api_user = login_result.api_user
-			auth_method = 'email/password'
-		else:
-			print(f'[FAILED] {account_name}: Email/password login failed, will not use stale session cookies')
-			return False, None, None
-	else:
-		user_cookies = parse_cookies(account.cookies)
-		if not user_cookies:
-			print(f'[FAILED] {account_name}: Invalid configuration format')
-			return False, None, None
-		all_cookies = await prepare_cookies(account_name, provider_config, user_cookies)
-		auth_method = 'session cookies'
+			result = await _run_api_attempt(
+				login_result.cookies,
+				account,
+				account_name,
+				provider_config,
+				api_user_override=login_result.api_user or account.api_user,
+			)
+			return result
+		print(f'[FAILED] {account_name}: Browser login fallback failed')
 
-	if not all_cookies:
-		return False, None, None
-
-	print(f'[AUTH] {account_name}: Using auth method -> {auth_method}')
-
-	return await asyncio.to_thread(
-		run_check_in_requests,
-		all_cookies,
-		account,
-		account_name,
-		provider_config,
-		api_user_override=resolved_api_user,
-		use_proxy=provider_config.use_proxy,
-	)
+	if last_result:
+		return last_result
+	return _run_failed_result('No usable API token, cookies, or browser credentials', CheckinStatus.NEEDS_LOGIN)
 
 
 def run_check_in_requests(
-	all_cookies: dict,
+	all_cookies: dict | None,
 	account: AccountConfig,
 	account_name: str,
 	provider_config,
 	*,
 	api_user_override: str | None = None,
+	api_token: str | None = None,
 	use_proxy: bool = False,
-) -> tuple[bool, dict | None, dict | None]:
-	"""执行 HTTP 签到请求；异步调用方通过线程池隔离阻塞式 httpx。"""
+) -> CheckInRunResult:
+	"""执行一次 HTTP 签到请求；异步调用方通过线程池隔离阻塞式 httpx。"""
 	try:
 		client_kwargs: dict = {'http2': True, 'timeout': 30.0, 'trust_env': False}
 		proxy_url = get_proxy_server(use_proxy=use_proxy)
@@ -460,7 +602,8 @@ def run_check_in_requests(
 			print(f'[WARN] {account_name}: Provider requires proxy but CHECKIN_PROXY_URL is not set')
 
 		with httpx.Client(**client_kwargs) as client:
-			client.cookies.update(all_cookies)
+			if all_cookies:
+				client.cookies.update(all_cookies)
 
 			headers = {
 				'User-Agent': os.getenv(
@@ -479,6 +622,11 @@ def run_check_in_requests(
 			api_user = api_user_override or account.api_user
 			if api_user:
 				headers[provider_config.api_user_key] = api_user
+			if api_token:
+				token_value = api_token.strip()
+				if token_value.lower().startswith('bearer '):
+					token_value = token_value[7:].strip()
+				headers['Authorization'] = f'Bearer {token_value}'
 
 			user_info_url = f'{provider_config.domain}{provider_config.user_info_path}'
 			user_info_before = get_user_info(client, headers, user_info_url)
@@ -488,21 +636,34 @@ def run_check_in_requests(
 				print(user_info_before.get('error', 'Unknown error'))
 
 			if provider_config.needs_manual_check_in():
-				success = execute_check_in(client, account_name, provider_config, headers)
+				check_result: CheckinResult = execute_check_in(client, account_name, provider_config, headers)
 				user_info_after = get_user_info(client, headers, user_info_url)
-				return success, user_info_before, user_info_after
+				return CheckInRunResult(
+					check_result.succeeded,
+					user_info_before,
+					user_info_after,
+					check_result.status,
+					check_result.message,
+				)
 
 			user_info_after = get_user_info(client, headers, user_info_url)
 			if user_info_after and user_info_after.get('success'):
 				print(f'[INFO] {account_name}: Check-in completed automatically (triggered by user info request)')
-				return True, user_info_before, user_info_after
+				return CheckInRunResult(
+					True,
+					user_info_before,
+					user_info_after,
+					CheckinStatus.SUCCESS,
+					'签到成功',
+				)
 			error = user_info_after.get('error', 'Unknown error') if user_info_after else 'Unknown error'
+			status = _status_from_user_info(user_info_after)
 			print(f'[FAILED] {account_name}: Auto check-in failed - {error}')
-			return False, user_info_before, user_info_after
+			return CheckInRunResult(False, user_info_before, user_info_after, status, error)
 
 	except Exception as e:
-		print(f'[FAILED] {account_name}: Error occurred during check-in process - {str(e)[:50]}...')
-		return False, None, None
+		print(f'[FAILED] {account_name}: Error occurred during check-in process - {type(e).__name__}')
+		return _run_failed_result(f'Check-in request failed: {type(e).__name__}')
 
 
 async def main():
@@ -548,7 +709,10 @@ async def main():
 	for i, account in enumerate(accounts):
 		account_key = account.get_storage_key(i)
 		try:
-			success, user_info_before, user_info_after = await check_in_account(account, i, app_config)
+			check_result = await check_in_account(account, i, app_config)
+			success = check_result.success
+			user_info_before = check_result.user_info_before
+			user_info_after = check_result.user_info_after
 			if success:
 				success_count += 1
 

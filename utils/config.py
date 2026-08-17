@@ -186,6 +186,8 @@ class AccountConfig:
 
 	cookies: dict | str | None
 	api_user: str | None = None
+	api_key: str | None = None
+	jwt: str | None = None
 	provider: str = 'anyrouter'
 	name: str | None = None
 	email: str | None = None
@@ -200,10 +202,20 @@ class AccountConfig:
 		api_user = data.get('api_user')
 		if api_user is not None:
 			api_user = str(api_user).strip()
+		api_key = data.get('api_key')
+		if api_key is None:
+			api_key = data.get('apikey', data.get('access_token', data.get('token')))
+		if api_key is not None:
+			api_key = str(api_key).strip()
+		jwt = data.get('jwt')
+		if jwt is not None:
+			jwt = str(jwt).strip()
 
 		return cls(
 			cookies=data.get('cookies'),
 			api_user=api_user,
+			api_key=api_key,
+			jwt=jwt,
 			provider=provider,
 			name=name if name else None,
 			email=data.get('email'),
@@ -214,6 +226,15 @@ class AccountConfig:
 	def has_login_credentials(self) -> bool:
 		"""是否配置了邮箱密码登录"""
 		return bool(self.email and self.password)
+
+	def get_api_tokens(self) -> list[tuple[str, str]]:
+		"""按油猴脚本兼容顺序返回可用的 API 令牌。"""
+		tokens: list[tuple[str, str]] = []
+		if self.api_key:
+			tokens.append(('api_key', self.api_key))
+		if self.jwt:
+			tokens.append(('jwt', self.jwt))
+		return tokens
 
 	def get_display_name(self, index: int) -> str:
 		"""获取显示名称"""
@@ -250,6 +271,24 @@ def load_accounts_config() -> list[AccountConfig] | None:
 				print(f'ERROR: Account {i + 1} configuration format is incorrect')
 				return None
 
+			token_fields = ('api_key', 'apikey', 'access_token', 'token', 'jwt')
+			for token_field in token_fields:
+				if token_field in account_dict and (
+					not isinstance(account_dict[token_field], str) or not account_dict[token_field].strip()
+				):
+					print(f'ERROR: Account {i + 1} {token_field} must be a non-empty string')
+					return None
+
+			has_token = any(isinstance(account_dict.get(field), str) and account_dict[field].strip() for field in token_fields)
+			if has_token and (
+				'api_user' not in account_dict
+				or account_dict.get('api_user') is None
+				or isinstance(account_dict.get('api_user'), bool)
+				or not isinstance(account_dict.get('api_user'), (str, int))
+				or not str(account_dict.get('api_user')).strip()
+			):
+				print(f'ERROR: Account {i + 1} token authentication requires a non-empty api_user')
+				return None
 			if 'api_user' not in account_dict:
 				has_login = (
 					isinstance(account_dict.get('email'), str)
@@ -259,7 +298,7 @@ def load_accounts_config() -> list[AccountConfig] | None:
 				)
 				if not has_login:
 					print(
-						f'ERROR: Account {i + 1} missing required field (api_user) - only email+password login can omit it'
+						f'ERROR: Account {i + 1} missing required field (api_user) - token/cookie API auth requires it'
 					)
 					return None
 			elif account_dict.get('api_user') is not None and (
@@ -285,8 +324,8 @@ def load_accounts_config() -> list[AccountConfig] | None:
 				print(f'ERROR: Account {i + 1} cookie login requires a non-empty api_user')
 				return None
 
-			if not has_cookies and not has_login:
-				print(f'ERROR: Account {i + 1} must have either cookies or email+password')
+			if not has_cookies and not has_login and not has_token:
+				print(f'ERROR: Account {i + 1} must have token, cookies, or email+password')
 				return None
 
 			if has_cookies and not isinstance(account_dict.get('cookies'), (dict, str)):

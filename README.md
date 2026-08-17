@@ -24,6 +24,7 @@ https://gorouter.app/sign-up?aff=Y66b
 
 - ✅ 多平台（兼容 NewAPI 与 OneAPI）
 - ✅ 单个/多账号自动签到
+- ✅ NewAPI API/访问令牌优先，浏览器仅作为失败恢复路径
 - ✅ 多种机器人通知（可选）
 - ✅ 绕过 WAF 限制
 
@@ -35,12 +36,23 @@ https://gorouter.app/sign-up?aff=Y66b
 
 ### 2. 获取账号信息
 
-对于每个需要签到的账号，你需要获取：(可借助 [在线 Secrets 配置生成器](https://millylee.github.io/anyrouter-check-in/))
+对于每个需要签到的账号，推荐获取：(可借助 [在线 Secrets 配置生成器](https://millylee.github.io/anyrouter-check-in/))
 
-1. **Cookies**: 用于身份验证
-2. **API User**: 用于请求头的 new-api-user 参数（自己配置其它平台时该值需要注意匹配）
+1. **API Key/Access Token**：NewAPI 个人设置中生成的访问令牌，作为首选认证方式
+2. **API User**：用于 `New-Api-User` 请求头，必须与令牌所属账号一致
+3. **Cookies**（可选）：令牌失效后的 API 兜底凭据
 
-#### 获取 Cookies：
+邮箱密码仅用于令牌和 Cookies 均无法完成 API 请求时的最后浏览器恢复路径。这样登录页遇到 Cloudflare/Turnstile 时，不会阻塞正常的 API 签到。
+
+#### 获取 API Key/Access Token：
+
+1. 登录服务商后打开个人设置或令牌管理页面
+2. 创建一个用于签到的访问令牌，并立即复制保存（令牌通常只完整显示一次）
+3. 从同一账号的请求中确认 `New-Api-User` 对应的用户 ID
+
+令牌只应放在 GitHub Environment Secret 中，不要提交到仓库、Issue 或日志。
+
+#### 获取 Cookies（可选兜底）：
 
 1. 打开浏览器，访问 https://anyrouter.top/
 2. 登录你的账户
@@ -72,8 +84,9 @@ https://gorouter.app/sign-up?aff=Y66b
   {
     "id": "account-1",
     "name": "我的主账号",
-    "email": "account1@example.com",
-    "password": "account1_password"
+    "api_user": "12345",
+    "api_key": "仅存于 GitHub Secret 的访问令牌",
+    "cookies": {"session": "可选的兜底会话"}
   },
   {
     "name": "备用账号",
@@ -86,9 +99,12 @@ https://gorouter.app/sign-up?aff=Y66b
 
 **字段说明**：
 
-- `email` + `password`：推荐的浏览器登录方式，登录成功后会自动获取 cookies 与用户标识
-- `cookies`：兼容旧版的 session cookies 登录方式
-- `api_user`：session cookies 登录时用于请求头的 new-api-user 参数；邮箱密码登录可省略
+- `api_key`：NewAPI Access Token，优先写入 `Authorization: Bearer <token>`；必须同时配置 `api_user`
+- `jwt`：兼容油猴脚本的 JWT 令牌，优先级低于 `api_key`、高于 Cookies
+- `apikey` / `access_token` / `token`：`api_key` 的兼容别名
+- `cookies`：兼容旧版的 session cookies API 兜底方式；不会在 API 请求前启动浏览器
+- `api_user`：令牌或 session cookies 请求时用于 `New-Api-User` 请求头；邮箱密码登录可省略
+- `email` + `password`：仅在 API 凭据均失败后使用的浏览器恢复方式
 - `provider` (可选)：指定使用的服务商，默认为 `anyrouter`
 - `name` (可选)：自定义账号显示名称，用于通知和日志中标识账号
 - `id` (可选但推荐)：稳定账号标识，用于余额历史和多次运行的账号隔离；不要填写 Cookie、Token 或密码
@@ -98,6 +114,8 @@ https://gorouter.app/sign-up?aff=Y66b
 - 如果未提供 `provider` 字段，默认使用 `anyrouter`（向后兼容）
 - 如果未提供 `name` 字段，会使用 `Account 1`、`Account 2` 等默认名称
 - `anyrouter` 与 `agentrouter` 配置已内置，无需填写
+
+认证顺序固定为：`api_key → jwt → cookies → WAF Cookie 刷新 → 邮箱密码浏览器登录`。只有 API 明确返回 WAF/验证码，或所有 API 凭据均失败后，才会启动 CloakBrowser。
 
 如果使用 session cookies 登录，接下来获取 cookies 与 api_user 的值。
 
@@ -225,7 +243,7 @@ https://gorouter.app/sign-up?aff=Y66b
 **关于 `bypass_method`**：
 
 - 不设置或设置为 `null`：直接使用用户提供的 cookies 进行请求（适合无 WAF 保护的网站）
-- 设置为 `"waf_cookies"`：使用 CloakBrowser 打开浏览器获取 WAF cookies 后再进行请求（适合有 WAF 保护的网站）
+- 设置为 `"waf_cookies"`：仅当 API 返回 WAF/验证码挑战时，才使用 CloakBrowser 获取 WAF cookies 后重试（适合有 WAF 保护的网站）
 
 > 注：`anyrouter` 和 `agentrouter` 已内置默认配置，无需在 `PROVIDERS` 中配置
 
@@ -245,7 +263,7 @@ https://gorouter.app/sign-up?aff=Y66b
 - `user_info_path` (可选)：用户信息 API 路径，默认为 `/api/user/self`
 - `api_user_key` (可选)：API 用户标识请求头名称，默认为 `new-api-user`
 - `bypass_method` (可选)：WAF 绕过方法
-  - `"waf_cookies"`：使用 CloakBrowser 打开浏览器获取 WAF cookies 后再执行签到
+  - `"waf_cookies"`：API 返回 WAF/验证码时，使用 CloakBrowser 获取 WAF cookies 后重试
   - 不设置或 `null`：直接使用用户 cookies 执行签到（适合无 WAF 保护的网站）
 - `waf_cookie_names` (可选)：绕过 WAF 所需 cookie 的名称列表，`bypass_method` 为 `waf_cookies` 时必须设置
 
@@ -269,10 +287,10 @@ https://gorouter.app/sign-up?aff=Y66b
 **内置配置说明**：
 
 - `anyrouter`：
-  - `bypass_method: "waf_cookies"`（需要先获取 WAF cookies，然后执行签到）
+  - `bypass_method: "waf_cookies"`（API 返回 WAF/验证码时才获取 WAF cookies）
   - `sign_in_path: "/api/user/sign_in"`
 - `agentrouter`：
-  - `bypass_method: "waf_cookies"`（需要获取 `acw_tc`）
+  - `bypass_method: "waf_cookies"`（API 返回 WAF/验证码时获取 `acw_tc`）
   - `sign_in_path: null`（查询用户信息时自动签到）
   - `use_proxy: true`
 

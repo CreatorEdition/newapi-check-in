@@ -141,3 +141,36 @@ def test_cookie_values_and_api_user_types_are_validated(monkeypatch):
 	)
 
 	assert load_accounts_config() is None
+
+
+def test_api_key_is_primary_and_cookie_can_be_kept_as_fallback(monkeypatch):
+	monkeypatch.setenv(
+		'ANYROUTER_ACCOUNTS',
+		json.dumps(
+			[
+				{
+					'api_user': '12345',
+					'api_key': 'api-key-value',
+					'jwt': 'jwt-value',
+					'cookies': {'session': 'session-value'},
+				}
+			]
+		),
+	)
+
+	from utils.config import load_accounts_config
+
+	accounts = load_accounts_config()
+	assert accounts is not None
+	assert accounts[0].get_api_tokens() == [('api_key', 'api-key-value'), ('jwt', 'jwt-value')]
+
+
+def test_token_auth_requires_api_user(monkeypatch):
+	monkeypatch.setenv(
+		'ANYROUTER_ACCOUNTS',
+		json.dumps([{'api_key': 'api-key-value'}]),
+	)
+
+	from utils.config import load_accounts_config
+
+	assert load_accounts_config() is None
