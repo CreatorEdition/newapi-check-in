@@ -3,17 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import re
 import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal, cast
 
 from utils.debug import debug_print, is_debug_enabled
 from utils.popups import dismiss_popups, setup_popup_guard
-from utils.proxy import get_playwright_proxy
+from utils.proxy import get_playwright_proxy, mask_proxy_url
 
 if TYPE_CHECKING:
 	from playwright.async_api import BrowserContext, Locator, Page
@@ -162,18 +163,34 @@ def _env_bool(name: str, default: bool) -> bool:
 	return raw.strip().lower() in {'1', 'true', 'yes', 'on'}
 
 
+def _env_int(name: str, default: int) -> int:
+	"""读取整数环境变量，非法值按默认值处理。"""
+	try:
+		return int(os.getenv(name, str(default)).strip())
+	except (TypeError, ValueError):
+		return default
+
+
+def _safe_profile_component(value: str) -> str:
+	"""将展示名称转换为稳定且不能逃逸目录的 Profile 片段。"""
+	original = str(value or '').strip()
+	slug = re.sub(r'[^\w.-]+', '_', original).strip('._')[:40]
+	digest = hashlib.sha256(original.encode('utf-8')).hexdigest()[:10]
+	return f'{slug or "account"}-{digest}'
+
+
 def load_browser_login_settings(
 	account_name: str, provider: str, *, persist_profile: bool = True
 ) -> BrowserLoginSettings:
 	profile_base = Path(os.getenv('CHECKIN_BROWSER_PROFILE_DIR', '.browser_profiles'))
-	profile_dir = profile_base / provider / account_name
+	profile_dir = profile_base / _safe_profile_component(provider) / _safe_profile_component(account_name)
 	humanize = _env_bool('CHECKIN_HUMANIZE', True)
 	if provider == 'agentrouter':
 		humanize = _env_bool('CHECKIN_HUMANIZE_AGENTROUTER', humanize)
 	return BrowserLoginSettings(
 		headless=_env_bool('CHECKIN_HEADLESS', True),
 		humanize=humanize,
-		wait_timeout_ms=int(os.getenv('CHECKIN_WAIT_TIMEOUT_MS', str(DEFAULT_TIMEOUT_MS))),
+		wait_timeout_ms=max(1_000, min(300_000, _env_int('CHECKIN_WAIT_TIMEOUT_MS', DEFAULT_TIMEOUT_MS))),
 		profile_dir=profile_dir,
 		cloakbrowser_binary_path=os.getenv('CLOAKBROWSER_BINARY_PATH', '').strip() or None,
 		persist_profile=persist_profile,
@@ -215,7 +232,7 @@ async def launch_login_context(settings: BrowserLoginSettings, *, use_proxy: boo
 	if proxy:
 		launch_kwargs['proxy'] = proxy
 		if is_debug_enabled():
-			print(f'[INFO] Browser proxy enabled: {proxy["server"]}')
+			print(f'[INFO] Browser proxy enabled: {mask_proxy_url(proxy["server"])}')
 		else:
 			print('[INFO] Browser proxy enabled')
 	elif use_proxy:
@@ -225,14 +242,14 @@ async def launch_login_context(settings: BrowserLoginSettings, *, use_proxy: boo
 		from cloakbrowser import launch_persistent_context_async
 
 		settings.profile_dir.mkdir(parents=True, exist_ok=True)
-		return await launch_persistent_context_async(str(settings.profile_dir), **launch_kwargs)
+		return cast('BrowserContext', await launch_persistent_context_async(str(settings.profile_dir), **launch_kwargs))
 
 	from cloakbrowser import launch_async
 
 	context_kwargs = {'viewport': launch_kwargs.pop('viewport')}
 	browser = await launch_async(**launch_kwargs)
 	context = await browser.new_context(**context_kwargs)
-	return _EphemeralBrowserContext(context, browser)
+	return cast('BrowserContext', _EphemeralBrowserContext(context, browser))
 
 
 def get_screenshot_dir() -> Path:
@@ -295,7 +312,9 @@ async def wait_for_site_ready(page: Page, timeout_ms: int = WAF_READY_TIMEOUT_MS
 		print(f'[INFO] Dismissed {closed} popup dialog(s)')
 
 
-async def _wait_for_optional_load_state(page: Page, state: str, timeout_ms: int) -> bool:
+async def _wait_for_optional_load_state(
+	page: Page, state: Literal['domcontentloaded', 'load', 'networkidle'], timeout_ms: int
+) -> bool:
 	try:
 		await page.wait_for_load_state(state, timeout=timeout_ms)
 		return True
@@ -522,8 +541,9 @@ async def _wait_for_login_page_ready(page: Page, timeout_ms: int) -> None:
 	if await _is_email_form_visible(page):
 		return
 
-	remaining_ms = timeout_ms
+	deadline = time.monotonic() + max(0, timeout_ms) / 1000
 	for selector in LOGIN_PAGE_READY_SELECTORS:
+		remaining_ms = max(0, int((deadline - time.monotonic()) * 1000))
 		if remaining_ms <= 0:
 			break
 		try:
@@ -533,6 +553,7 @@ async def _wait_for_login_page_ready(page: Page, timeout_ms: int) -> None:
 			continue
 
 	for pattern in EMAIL_LOGIN_BUTTON_NAMES:
+		remaining_ms = max(0, int((deadline - time.monotonic()) * 1000))
 		if remaining_ms <= 0:
 			break
 		try:
@@ -571,9 +592,13 @@ async def _wait_for_username_input(page: Page, timeout_ms: int) -> bool:
 	if timeout_ms <= 0:
 		return await _is_email_form_visible(page)
 
+	deadline = time.monotonic() + timeout_ms / 1000
 	for selector in USERNAME_SELECTORS:
+		remaining_ms = max(0, int((deadline - time.monotonic()) * 1000))
+		if remaining_ms <= 0:
+			break
 		try:
-			await page.locator(selector).first.wait_for(state='visible', timeout=timeout_ms)
+			await page.locator(selector).first.wait_for(state='visible', timeout=remaining_ms)
 			return True
 		except Exception:  # nosec B112
 			continue

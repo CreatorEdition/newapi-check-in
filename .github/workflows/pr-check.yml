@@ -44,8 +44,11 @@ jobs:
         continue-on-error: true
         run: |
           echo "## Ruff Lint 检查" >> $GITHUB_STEP_SUMMARY
+          set +e
           uv run ruff check . --output-format=github 2>&1 | tee ruff-lint.log
-          if [ $? -eq 0 ]; then
+          command_status=${PIPESTATUS[0]}
+          set -e
+          if [ "$command_status" -eq 0 ]; then
             echo "✅ 代码风格检查通过" >> $GITHUB_STEP_SUMMARY
             echo "status=success" >> $GITHUB_OUTPUT
           else
@@ -58,8 +61,11 @@ jobs:
         continue-on-error: true
         run: |
           echo "## Ruff Format 检查" >> $GITHUB_STEP_SUMMARY
+          set +e
           uv run ruff format --check . 2>&1 | tee ruff-format.log
-          if [ $? -eq 0 ]; then
+          command_status=${PIPESTATUS[0]}
+          set -e
+          if [ "$command_status" -eq 0 ]; then
             echo "✅ 代码格式检查通过" >> $GITHUB_STEP_SUMMARY
             echo "status=success" >> $GITHUB_OUTPUT
           else
@@ -72,8 +78,11 @@ jobs:
         continue-on-error: true
         run: |
           echo "## MyPy 类型检查" >> $GITHUB_STEP_SUMMARY
+          set +e
           uv run mypy . --ignore-missing-imports 2>&1 | tee mypy.log
-          if [ $? -eq 0 ]; then
+          command_status=${PIPESTATUS[0]}
+          set -e
+          if [ "$command_status" -eq 0 ]; then
             echo "✅ 类型检查通过" >> $GITHUB_STEP_SUMMARY
             echo "status=success" >> $GITHUB_OUTPUT
           else
@@ -86,9 +95,13 @@ jobs:
         continue-on-error: true
         run: |
           echo "## Bandit 安全扫描" >> $GITHUB_STEP_SUMMARY
+          set +e
           uv run bandit -r . -c pyproject.toml -f json -o bandit-report.json
+          report_status=$?
           uv run bandit -r . -c pyproject.toml 2>&1 | tee bandit.log
-          if [ $? -eq 0 ]; then
+          command_status=${PIPESTATUS[0]}
+          set -e
+          if [ "$report_status" -eq 0 ] && [ "$command_status" -eq 0 ]; then
             echo "✅ 安全扫描通过" >> $GITHUB_STEP_SUMMARY
             echo "status=success" >> $GITHUB_OUTPUT
           else
@@ -101,8 +114,11 @@ jobs:
         continue-on-error: true
         run: |
           echo "## Pytest 测试" >> $GITHUB_STEP_SUMMARY
+          set +e
           uv run pytest tests/ -v --cov=. --cov-report=term --cov-report=xml --cov-report=html 2>&1 | tee pytest.log
-          if [ $? -eq 0 ]; then
+          command_status=${PIPESTATUS[0]}
+          set -e
+          if [ "$command_status" -eq 0 ]; then
             echo "✅ 所有测试通过" >> $GITHUB_STEP_SUMMARY
             echo "status=success" >> $GITHUB_OUTPUT
           else
@@ -203,11 +219,13 @@ jobs:
 
       - name: 发布检查报告到 PR
         if: always() && github.event_name == 'pull_request'
+        env:
+          QUALITY_REPORT: ${{ steps.generate-report.outputs.REPORT }}
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const report = `${{ steps.generate-report.outputs.REPORT }}`;
+            const report = process.env.QUALITY_REPORT || '';
 
             // 查找之前的评论
             const { data: comments } = await github.rest.issues.listComments({

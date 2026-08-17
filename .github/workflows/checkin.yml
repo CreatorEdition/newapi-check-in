@@ -10,6 +10,10 @@ on:
         default: false
         type: boolean
 
+concurrency:
+  group: checkin-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   checkin:
     runs-on: ubuntu-latest
@@ -20,6 +24,7 @@ jobs:
       DEBUG_MODE: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.debug == 'true' && 'true' || 'false' }}
       # CI 中禁用 CloakBrowser 后台更新检查与下载，避免安装命令退出时触发 SIGSEGV。
       CLOAKBROWSER_AUTO_UPDATE: 'false'
+      CHECKIN_PERSIST_PROFILE: 'false'
     steps:
     - uses: actions/checkout@v6
 
@@ -56,7 +61,7 @@ jobs:
       id: cloakbrowser-cache
       with:
         path: ~/.cloakbrowser
-        key: ${{ runner.os }}-cloakbrowser-v1
+        key: ${{ runner.os }}-cloakbrowser-v1-${{ hashFiles('pyproject.toml', 'uv.lock') }}
         restore-keys: |
           ${{ runner.os }}-cloakbrowser-
 
@@ -74,14 +79,6 @@ jobs:
           balance-hash-${{ github.ref_name }}-
           balance-hash-
 
-    - name: 恢复浏览器 Profile 缓存
-      uses: actions/cache@v5
-      with:
-        path: .browser_profiles
-        key: browser-profiles-${{ runner.os }}-v1
-        restore-keys: |
-          browser-profiles-${{ runner.os }}-
-
     - name: 配置代理
       env:
         PROXY_SUBSCRIPTION_URL: ${{ secrets.PROXY_SUBSCRIPTION_URL }}
@@ -95,6 +92,7 @@ jobs:
         DEBUG_MODE: ${{ env.DEBUG_MODE }}
         CHECKIN_HEADLESS: false
         CHECKIN_HUMANIZE: true
+        FAIL_ON_PARTIAL_SUCCESS: ${{ secrets.FAIL_ON_PARTIAL_SUCCESS }}
         CHECKIN_WAIT_TIMEOUT_MS: 120000
         ANYROUTER_ACCOUNTS: ${{ secrets.ANYROUTER_ACCOUNTS }}
         PROVIDERS: ${{ secrets.PROVIDERS }}

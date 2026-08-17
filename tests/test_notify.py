@@ -71,7 +71,7 @@ def test_send_pushplus(mock_httpx_client, notification_kit):
 	notification_kit.send_pushplus('测试标题', '测试内容')
 
 	mock_client.post.assert_called_once_with(
-		'http://www.pushplus.plus/send',
+		'https://www.pushplus.plus/send',
 		json={'token': 'pushplus_token', 'title': '测试标题', 'content': '测试内容', 'template': 'html'},
 	)
 
@@ -113,10 +113,14 @@ def test_send_gotify(mock_httpx_client, notification_kit):
 
 	notification_kit.send_gotify('测试标题', '测试内容')
 
-	expected_url = 'https://gotify.example.com/message?token=gotify_token'
+	expected_url = 'https://gotify.example.com/message'
 	expected_data = {'title': '测试标题', 'message': '测试内容', 'priority': 9}
 
-	mock_client.post.assert_called_once_with(expected_url, json=expected_data)
+	mock_client.post.assert_called_once_with(
+		expected_url,
+		json=expected_data,
+		headers={'X-Gotify-Key': 'gotify_token'},
+	)
 
 
 def test_http_response_error(notification_kit):
@@ -155,6 +159,15 @@ def test_missing_config(monkeypatch):
 
 	with pytest.raises(ValueError, match='PushPlus Token not configured'):
 		kit.send_pushplus('测试', '测试')
+
+
+def test_invalid_gotify_priority_falls_back_to_default(monkeypatch, capsys):
+	monkeypatch.setenv('GOTIFY_PRIORITY', 'not-a-number')
+
+	kit = NotificationKit()
+
+	assert kit.gotify_priority == 9
+	assert 'GOTIFY_PRIORITY is invalid' in capsys.readouterr().out
 
 
 def test_push_message(notification_kit, monkeypatch):
