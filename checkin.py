@@ -43,7 +43,6 @@ from utils.newapi_client import (
 	CheckinStatus,
 	classify_response,
 	execute_checkin_request,
-	normalize_message,
 	redact_message,
 )
 from utils.notify import notify
@@ -333,7 +332,9 @@ def get_user_info(client, headers, user_info_url: str):
 				continue
 			if response is not None:
 				classification = classify_response(response, stage='user_info')
-				if classification.status is not CheckinStatus.FAILED or classification.diagnostics.get('isHtmlChallenge'):
+				if classification.status is not CheckinStatus.FAILED or classification.diagnostics.get(
+					'isHtmlChallenge'
+				):
 					return {
 						'success': False,
 						'error': f'Failed to get user info: {classification.message[:120]}',
@@ -438,10 +439,12 @@ def _status_from_user_info(user_info: dict | None) -> CheckinStatus:
 	if not user_info:
 		return CheckinStatus.FAILED
 	raw_status = user_info.get('_checkin_status')
-	try:
-		return CheckinStatus(raw_status)
-	except (TypeError, ValueError):
-		return CheckinStatus.SUCCESS if user_info.get('success') else CheckinStatus.FAILED
+	if isinstance(raw_status, str):
+		try:
+			return CheckinStatus(raw_status)
+		except ValueError:
+			pass
+	return CheckinStatus.SUCCESS if user_info.get('success') else CheckinStatus.FAILED
 
 
 def _run_failed_result(message: str, status: CheckinStatus = CheckinStatus.FAILED) -> CheckInRunResult:

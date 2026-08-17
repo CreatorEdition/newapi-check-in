@@ -279,7 +279,9 @@ def load_accounts_config() -> list[AccountConfig] | None:
 					print(f'ERROR: Account {i + 1} {token_field} must be a non-empty string')
 					return None
 
-			has_token = any(isinstance(account_dict.get(field), str) and account_dict[field].strip() for field in token_fields)
+			has_token = any(
+				isinstance(account_dict.get(field), str) and account_dict[field].strip() for field in token_fields
+			)
 			if has_token and (
 				'api_user' not in account_dict
 				or account_dict.get('api_user') is None
